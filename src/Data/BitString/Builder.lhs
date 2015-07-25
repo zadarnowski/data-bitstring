@@ -7,16 +7,12 @@
 >   Builder
 > ) where
 
-> import Data.Bits
-> import Data.BitString.Internal
 > import Data.List
-> import Foreign.Storable
 > import Numeric (showHex)
 
 > import GHC.Prim
 > import GHC.ST
 > import GHC.Types
-> import GHC.Word
 
 
   Data Types
@@ -48,7 +44,7 @@
 
 > emptyBuilders = BS emptyBuilder emptyBuilders
 > emptyBuilder  = B 0# (int2Word# 0#) 0# emptyPages
-> emptyPages    = withNewPage 0# (\ ma# st# -> st#) (\ a# -> PS (P a#) emptyPages)
+> emptyPages    = withNewPage 0# (\ _ma# st# -> st#) (\ a# -> PS (P a#) emptyPages)
 
 
   'Show' Instance
@@ -58,7 +54,7 @@
 >   showsPrec _ (B 0#  _ 0#  _) = showString "[]"
 >   showsPrec _ (B 0#  _ n# ps) = showPages# n# ps
 >   showsPrec _ (B m# q# 0#  _) = showChar '[' . showTail# m# q# . showChar ']'
->   showsPrec _ (B m# q# n# ps) = showPages# n# ps . showChar ':' . showChar '[' . showTail# n# q# . showChar ']'
+>   showsPrec _ (B m# q# n# ps) = showPages# n# ps . showChar ':' . showChar '[' . showTail# m# q# . showChar ']'
 
 > showPages# :: Int# -> Pages -> ShowS
 > showPages# n# = foldl (.) id . intersperse (showChar ':') . map showHex . unpackPages# n#
@@ -70,15 +66,22 @@
 > unpackPages# :: Int# -> Pages -> [Word]
 > unpackPages# = loop
 >  where
+>
+>   loop :: Int# -> Pages -> [Word]
 >   loop n# ps =
 >     case n# of
 >       0# -> []
 >       _  -> loop' n# (firstPageSize n#) ps
->   loop' n# c# (PS (P a#) ps') = loop'' c# a# (n# - c#) c# ps'
+>
+>   loop' :: Int# -> Int# -> Pages -> [Word]
+>   loop' n# c# (PS (P a#) ps') = loop'' c# a# (n# -# c#) c# ps'
+>
+>   loop'' :: Int# -> ByteArray# -> Int# -> Int# -> Pages -> [Word]
 >   loop'' s# a# n# c# ps =
 >     case s# of
 >       0# -> loop''' n# c# ps
->       _  -> let i# = s# -# 1# in W# (indexWordArray# a# i#) : loop'' i# n# c# ps
+>       _  -> let i# = s# -# 1# in W# (indexWordArray# a# i#) : loop'' i# a# n# c# ps
+>
 >   loop''' n# c# ps =
 >     case n# of
 >       0# -> []
@@ -113,13 +116,13 @@
 >   makeTail :: Builders -> Builder
 >   makeTail (BS (B m# q# n# ps) bs') =
 >     case rm# of
->       0# -> B mm# q# nn# (makePagesFromPB nn# n# ps bs')
+>       0# -> B mm# q# nn# (makePagesFromPBf nn# n# ps bs')
 >       _  -> case rm# ># 0# of
 >               0# -> let nrm# = negateInt# rm#
 >                         nrw# = WORD_SIZE_IN_BITS# -# nrm#
 >                         nq#  = uncheckedShiftRL# q# nrm#
 >                         nu#  = uncheckedShiftL# q# nrw#
->                      in B mm# nq# nn# (makePagesFromUPB' nn# (firstPageSize nn#) nrm# nrw# nu# n# ps bs')
+>                      in B mm# nq# nn# (makePagesFromUPB nn# (firstPageSize nn#) nrm# nrw# nu# n# ps bs')
 >               _  -> makeTailFromP' (uncheckedShiftL# q# rm#) rm# n# ps bs'
 >    where
 >     rm# = mm# -# m#
@@ -129,16 +132,6 @@
     * 'rq' is the partially-constructed tail word, with all bits collected so far already in place,
     * 'rm' is the number of tail bits remaining to be collected,
     * 'n'  is the number of elements remaining in the page list 'ps'
-
-    Invariants:
-    * '0 <= rm <= mm'
-    * '0 <= n'
-
->   makeTailFromP :: Word# -> Int# -> Int# -> Pages -> Builders -> Builder
->   makeTailFromP rq# rm# n# ps bs =
->     case rm# of
->       0# -> B mm# rq# nn# (makePagesFromPB nn# n# ps bs)
->       _  -> makeTailFromP' rq# rm# n# ps bs
 
     Invariants:
     * '0 < rm <= mm'
@@ -156,7 +149,7 @@
 
 >   makeTailFromP'' :: Word# -> Int# -> Int# -> Int# -> Pages -> Builders -> Builder
 >   makeTailFromP'' rq# rm# n# c# (PS (P a#) ps') bs =
->     B mm# (or# rq# (uncheckedShiftRL# q# m#)) nn# (makePagesFromUAPB' nn# (firstPageSize nn#) m# w# u# s# a# (n# -# c#) ps' bs)
+>     B mm# (or# rq# (uncheckedShiftRL# q# m#)) nn# (makePagesFromUAPB nn# (firstPageSize nn#) m# w# u# s# a# (n# -# c#) ps' bs)
 >    where
 >     s# = c# -# 1#
 >     q# = indexWordArray# a# s#
@@ -175,16 +168,17 @@
 >   makeTailFromB' :: Word# -> Int# -> Builders -> Builder
 >   makeTailFromB' rq# rm# (BS (B m# q# n# ps) bs') =
 >     case rrm# of
->       0# -> B mm# (or# rq# q#) nn# (makePagesFromPB nn# n# ps bs')
+>       0# -> B mm# (or# rq# q#) nn# (makePagesFromPBf nn# n# ps bs')
 >       _  -> case rrm# ># 0# of
 >               0# -> let nrm# = negateInt# rrm#
 >                         nrw# = WORD_SIZE_IN_BITS# -# nrm#
 >                         nq#  = uncheckedShiftRL# q# nrm#
 >                         nu#  = uncheckedShiftL# q# nrw#
->                      in B mm# nq# nn# (makePagesFromUPB' nn# (firstPageSize nn#) nrm# nrw# nu# n# ps bs')
+>                      in B mm# nq# nn# (makePagesFromUPB nn# (firstPageSize nn#) nrm# nrw# nu# n# ps bs')
 >               _  -> makeTailFromP' (or# rq# (uncheckedShiftL# q# rrm#)) rrm# n# ps bs'
 >    where
 >     rrm# = rm# -# m#
+
 
     Construct pages of the result builder.
 
@@ -205,244 +199,201 @@
     B. The builder list 'bs'.
 
 
-    Invariants:
-    * '0 < rc <= rn'
-
->   makePagesFromB' :: Int# -> Int# -> Builders -> Pages
->   makePagesFromB' rn# rc# (BS (B m# q# n# ps) bs') =
->     case m# of
->       0# -> makePagesFromPB' rn# rc# n# ps bs'
->       _  -> error "TODO: misaligned copy"
+    Cases that are aligned on word boundaries
+    -----------------------------------------
 
     Invariants:
-    * '0 <= n <= rn'
+    * "0 <= n <= rn"
 
->   makePagesFromPB :: Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromPB rn# n# ps bs =
+>   makePagesFromPBf :: Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromPBf rn# n# ps bs =
 >     case rn# ># n# of
 >       0# -> ps
->       _  -> makePagesFromPB' rn# (firstPageSize rn#) n# ps bs
+>       _  -> makePagesFromPBf' rn# (firstPageSize rn#) n# ps bs
 
     Invariants:
-    * '0 < rc <= rn'
-    * '0 <= n < rn'
+    * "0 <= n <= rn"
+    * "prc == 2^i"
+    * "rn .&. (2*prc - 1) == 0"
+    * "pc == 2^j"
+    * "n .&. (2*pc - 1) == 0"
 
->   makePagesFromPB' :: Int# -> Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromPB' rn# rc# n# ps bs =
+>   makePagesFromPB :: Int# -> Int# -> Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromPB rn# prc# n# pc# ps bs =
+>     case rn# ># n# of
+>       0# -> ps
+>       _  -> makePagesFromPB' rn# (nextPageSize rn# prc#) n# pc# ps bs
+
+    Invariants:
+    * "0 < rn"
+    * "rc == (rn .&. rc) == 2^i"
+    * "rn .&. (rc - 1) == 0"
+    * "0 <= n < rn"
+
+>   makePagesFromPBf' :: Int# -> Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromPBf' rn# rc# n# ps bs =
 >     case n# of
 >       0# -> makePagesFromB' rn# rc# bs
 >       _  -> makePagesFromPB'' rn# rc# n# (firstPageSize n#) ps bs
 
     Invariants:
-    * '0 < rc <= rn'
-    * '0 < c <= n < rn'
+    * "0 < rn"
+    * "rc == (rn .&. rc) == 2^i"
+    * "rn .&. (rc - 1) == 0"
+    * "0 <= n < rn"
+    * "pc == 2^j"
+    * "n .&. (2*pc - 1) == 0"
+
+>   makePagesFromPB' :: Int# -> Int# -> Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromPB' rn# rc# n# pc# ps bs =
+>     case n# of
+>       0# -> makePagesFromB' rn# rc# bs
+>       _  -> makePagesFromPB'' rn# rc# n# (nextPageSize n# pc#) ps bs
+
+    Invariants:
+    * "0 < rn"
+    * "rc == (rn .&. rc) == 2^i"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < c <= n < rn"
+    * "c == (n .&. c) == 2^j"
+    * "n .&. (c - 1) == 0"
 
 >   makePagesFromPB'' :: Int# -> Int# -> Int# -> Int# -> Pages -> Builders -> Pages
 >   makePagesFromPB'' rn# rc# n# c# (PS (P a#) ps') bs =
 >     case rc# ==# c# of
->       0# -> makePagesFromAPB'' rn# rc# c# a# (n# -# c#) ps' bs
->       _  -> PS (P a#) (makePagesFromPB (rn# -# rc#) (n# -# c#) ps' bs)
+>       0# -> makePagesFromAPB' rn# rc# c# a# (n# -# c#) c# ps' bs
+>       _  -> PS (P a#) (makePagesFromPB (rn# -# rc#) rc# (n# -# c#) c# ps' bs)
 
     Invariants:
-    * '0 <= rn'
-    * '0 <= s'
-    * '0 <= n'
+    * "0 < rn"
+    * "rc == (rn .&. rc) == 2^i"
+    * "rn .&. (rc - 1) == 0"
 
->   makePagesFromAPB :: Int# -> Int# -> ByteArray# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromAPB rn# s# a# n# ps bs =
+>   makePagesFromB' :: Int# -> Int# -> Builders -> Pages
+>   makePagesFromB' rn# rc# (BS (B m# _q# n# ps) bs') =
+>     case m# of
+>       0# -> makePagesFromPBf' rn# rc# n# ps bs'
+>       _  -> error "TODO: misaligned copy"
+
+    Invariants:
+    * "n + s <= rn"
+    * "prc == 2^i"
+    * "rn .&. (2*prc - 1) == 0"
+    * "0 <= s <= sizeofByteArray a / SIZEOF_HSWORD"
+    * "0 <= n"
+    * "pc == 2^j"
+    * "n .&. (2*pc - 1) == 0"
+
+>   makePagesFromAPB :: Int# -> Int# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromAPB rn# prc# s# a# n# pc# ps bs =
 >     case s# of
->       0# -> makePagesFromPB rn# n# ps bs
->       _  -> makePagesFromAPB' rn# s# a# n# ps bs
+>       0# -> makePagesFromPB rn# prc# n# pc# ps bs
+>       _  -> makePagesFromAPB' rn# (nextPageSize rn# prc#) s# a# n# pc# ps bs
 
     Invariants:
-    * '0 < rn'
-    * '0 < s'
-    * '0 <= n'
+    * "n + s <= rn"
+    * "rc == (rn .&. rc) == 2^i"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < s <= sizeofByteArray a / SIZEOF_HSWORD"
+    * "0 <= n"
+    * "pc == 2^j"
+    * "n .&. (2*pc - 1) == 0"
 
->   makePagesFromAPB' :: Int# -> Int# -> ByteArray# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromAPB' rn# s# a# n# ps bs = error "TODO: extract body from makePagesFromPB''"
-
-    Invariants:
-    * '0 < rc <= rn'
-    * '0 < s /= rc'
-    * '0 <= n'
-
->   makePagesFromAPB'' :: Int# -> Int# -> Int# -> ByteArray# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromAPB'' rn# rc# s# a# n# ps bs =
->     runST $ ST $ \st0# -> case newByteArray# rc# st0# of (# st1#, ma# #) -> fillPageFromAPB (rn# -# rc#) rc# ma# s# a# n# ps bs st1#
+>   makePagesFromAPB' :: Int# -> Int# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromAPB' rn# rc# s# a# n# pc# ps bs =
+>     runST $ ST $ \st0# -> case newByteArray# rc# st0# of (# st1#, ma# #) -> fillPageFromAPB rn# rc# rc# ma# s# a# n# pc# ps bs st1#
 
     Invariants:
-    * '0 <= rn'
-    * '0 < rs'
-    * '0 < s'
-    * '0 <= n'
+    * "n + s <= rn - rc + rs"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 < s <= sizeofByteArray a / SIZEOF_HSWORD"
+    * "0 <= n < rn"
+    * "pc == 2^j"
+    * "n .&. (2*pc - 1) == 0"
 
->   fillPageFromAPB :: Int# -> Int# -> MutableByteArray# st -> Int# -> ByteArray# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
->   fillPageFromAPB rn# rs# rma# s# a# n# ps bs st0# =
+>   fillPageFromAPB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromAPB rn# rc# rs# rma# s# a# n# pc# ps bs st0# =
 >     case rs# ># s# of
 >       0# -> let ns# = s# -# rs#
 >              in case copyWordArray# a# ns# rma# 0# rs# st0# of
 >                   st1# -> case unsafeFreezeByteArray# rma# st1# of
->                             (# st2#, ra# #) -> (# st2#, PS (P ra#) (makePagesFromAPB rn# ns# a# n# ps bs) #)
+>                             (# st2#, ra# #) -> (# st2#, PS (P ra#) (makePagesFromAPB (rn# -# rc#) rc# ns# a# n# pc# ps bs) #)
 >       _  -> let nrs# = rs# -# s#
 >              in case copyWordArray# a# 0# rma# nrs# s# st0# of
->                   st1# -> fillPageFromPB rn# nrs# rma# n# ps bs st1#
-
->   fillPageFromPB :: Int# -> Int# -> MutableByteArray# st -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
->   fillPageFromPB rn# rs# rma# n# ps bs st0# =
->     case n# of
->       0# -> fillPageFromB rn# rs# rma# bs st0#
->       _  -> fillPageFromPB' rn# rs# rma# n# (firstPageSize n#) ps bs st0#
-
->   fillPageFromPB' :: Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
->   fillPageFromPB' rn# rs# rma# n# c# (PS (P a#) ps') bs st0# =
->     fillPageFromAPB rn# rs# rma# c# a# (n# -# c#) ps' bs st0#
-
->   fillPageFromB = error "TODO"
-
-> {-
-
-> case rc# ># c# of
->                            0# -> case copyWordArray# a# (c# -# rc#) ma# 0# rc# st1# of
->                                    st2# -> case unsafeFreezeByteArray# ma# st2# of
->                                              (# st3#, aa# #) -> PS (P aa#) (error "TODO: make more pages")
->                            _  -> case copyWordArray# a# 0# ma# (rc# - c#) c# st1# of
->                                    st2# -> makeMorePages 
-
-> $ \aa# -> PS (P aa#) makeMorePages
->    where
->     fillPage
->     makeMorePages = ..
-> case d# ># 0# of
->               0# -> let fillPage ma# st# = copyWordArray# a# s# ma# 0# rc# st#
->                         s# = negateInt# d#
->                         nrn# = rn# -# rc#
->                         nrc# = nextPageSize nrn# rc#
->                      in withNewPage rc# fillPage $ \aa# -> PS (P aa#) (makePagesFromAPB nrn# nrc# s# a# (n# - c#) ps' bs) -- NOTE: next copy from a# MUST be a merge
->               _  -> error "TODO: merging"
->    where
->     d# = rc# -# c#
-
-> -}
-
-    TODO:
+>                   st1# -> fillPageFromPB rn# rc# nrs# rma# n# pc# ps bs st1#
 
     Invariants:
-    * '0 < rc <= rn'
-    * '0 < m < WORD_SIZE_IN_BITS'
+    * "n <= rn - rc + rs"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 <= n"
+    * "pc == 2^j"
+    * "n .&. (2*pc - 1) == 0"
+
+>   fillPageFromPB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromPB rn# rc# rs# rma# n# pc# ps bs st0# =
+>     case n# of
+>       0# -> fillPageFromB rn# rc# rs# rma# bs st0#
+>       _  -> fillPageFromPB' rn# rc# rs# rma# n# (nextPageSize n# pc#) ps bs st0#
+
+    Invariants:
+    * "n <= rn - rc + rs"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 <= n"
+    * "c == (n .&. c) == 2^j"
+    * "n .&. (c - 1) == 0"
+
+>   fillPageFromPB' :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromPB' rn# rc# rs# rma# n# c# (PS (P a#) ps') bs st0# = fillPageFromAPB rn# rc# rs# rma# c# a# (n# -# c#) c# ps' bs st0#
+
+    Invariants:
+    * "0 < rn"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+
+>   fillPageFromB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromB rn# rc# rs# rma# (BS (B m# _q# n# ps) bs') st0 =
+>     case m# of
+>       0# -> case n# of
+>               0# -> fillPageFromB rn# rc# rs# rma# bs' st0
+>               _  -> fillPageFromPB' rn# rc# rs# rma# n# (firstPageSize n#) ps bs' st0
+>       _  -> error "TODO: misaligned fill"
+
+
+
+    Cases that are not aligned on word boundaries
+    ---------------------------------------------
+
+    Invariants:
+    * "0 < rc <= rn"
+    * "rc == (rn .&. rc) == 2^i"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < m < WORD_SIZE_IN_BITS"
+    * "w == m - WORD_SIZE_IN_BITS"
+    * "u .&. (2^w - 1) == 0"
     * '0 <= n < rn'
 
->   makePagesFromUPB' :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromUPB' rn# rc# m# w# u# n# ps bs = error "TODO"
+>   makePagesFromUPB :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromUPB _rn# _rc# _m# _w# _u# _n# _ps _bs = error "TODO"
 
     Invariants:
-    * '0 < rc <= rn'
-    * '0 < m < WORD_SIZE_IN_BITS'
-    * '0 <= s'
-    * '0 <= n <= rn'
+    * "0 < rc <= rn"
+    * "rc == (rn .&. rc) == 2^i"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < m < WORD_SIZE_IN_BITS"
+    * "w == m - WORD_SIZE_IN_BITS"
+    * "u .&. (2^w - 1) == 0"
+    * "0 <= s"
+    * "0 <= n < rn"
 
->   makePagesFromUAPB' :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> ByteArray# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromUAPB' rn# rc# m# w# u# s# a# n# ps bs = error "TODO"
-
-
- ================================================================================
-
-> {-
-
->   makePagesFromB, makePagesFromB', makePagesFromB'' :: Int# -> Int# -> Builders -> Pages
->   makePagesFromB rn# rc# bs =
->     case rn# of
->       0# -> emptyPages
->       _  -> makePagesFromB' rn# rc# bs
->   makePagesFromB' rn# rc# bs {- where rn > 0 -} =
->     case rn# `andI#` rc# of
->       0# -> makePagesFromB' rn# (rc# `uncheckedIShiftL#` 1#) bs
->       _  -> makePagesFromB'' rn# rc# bs
->   makePagesFromB'' rn# rc# (BS (B m# q# n# ps) bs') {- where rn .&. rc > 0 -} =
->     makePagesFromQPB'' rn# rc# m# q# n# 1# ps bs'
-
->   makePagesFromPB, makePagesFromPB', makePagesFromPB'', makePagesFromPB''', makePagesFromPB'''' ::
->     Int# -> Int# -> Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromPB rn# rc# n# c# ps bs =
->     case rn# of
->       0# -> emptyPages
->       _  -> makePagesFromPB' rn# rc# n# c# ps bs
->   makePagesFromPB' rn# rc# n# c# ps bs {- where rn > 0 -} =
->     case rn# `andI#` rc# of
->       0# -> makePagesFromPB' rn# (rc# `uncheckedIShiftL#` 1#) n# c# ps bs
->       _  -> makePagesFromPB'' rn# rc# n# c# ps bs
->   makePagesFromPB'' rn# rc# n# c# ps bs {- where rn .&. rc > 0 -} =
->     case n# of
->       0# -> makePagesFromB'' rn# rc# bs
->       _  -> makePagesFromPB''' rn# rc# n# c# ps bs
->   makePagesFromPB''' rn# rc# n# c# ps bs {- where rn .&. rc > 0 && n > 0 -} =
->     case n# `andI#` c# of
->       0# -> makePagesFromPB''' rn# rc# n# (c# `uncheckedIShiftL#` 1#) ps bs
->       _  -> makePagesFromPB'''' rn# rc# n# c# ps bs
->   makePagesFromPB'''' rn# rc# n# c# (PS (P a#) ps') bs {- where rn .&. rc > 0 && n .&. c > 0 -} =
->     case d# >=# 0# of
->       0# -> error "TODO: merge blocks"
->       _  -> case d# of
->               0# -> PS (P a#) (makePagesFromPB rn'# rc'# n'# c'# ps' bs)
->               _  -> let fill ma# st# = copyByteArray# a# (d# *# SIZEOF_HSWORD#) ma# 0# (rc# *# SIZEOF_HSWORD#) st#
->                      in withNewPage rc# fill $ \a'# -> PS (P a'#) (makePagesFromAPB' rn'# rc'# d# a# n'# c'# ps' bs) -- NOTE: d# > 0 so rn'# > 0
->    where
->     d#   = rc# -# c#
->     rn'# = rn# `xorI#` rc#
->     rc'# = rc# `uncheckedIShiftL#` 1#
->     n'#  = n# `xorI#` c#
->     c'#  = c# `uncheckedIShiftL#` 1#
-
->   makePagesFromAPB, makePagesFromAPB', makePagesFromAPB'' :: Int# -> Int# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromAPB rn# rc# s# a# n# c# ps bs {- where 0 < s < rc -} =
->     case rn# of
->       0# -> emptyPages
->       _  -> makePagesFromAPB' rn# rc# s# a# n# c# ps bs
->   makePagesFromAPB' rn# rc# s# a# n# c# ps bs {- where 0 < s < rc and rn > 0 -} =
->     case rn# `andI#` rc# of
->       0# -> makePagesFromAPB' rn# (rc# `uncheckedIShiftL#` 1#) s# a# n# c# ps bs
->       _  -> makePagesFromAPB'' rn# rc# s# a# n# c# ps bs
->   makePagesFromAPB'' rn# rc# s# a# n# c# ps bs {- where 0 < s < rc and rn .&. rc > 0 -} =
->     error "TODO: merge blocks"
-
->   makePagesFromQPB, makePagesFromQPB', makePagesFromQPB'' :: Int# -> Int# -> Int# -> Word# -> Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromQPB rn# rc# m# q# n# c# ps bs =
->     case rn# of
->       0# -> emptyPages
->       _  -> makePagesFromQPB' rn# rc# m# q# n# c# ps bs
->   makePagesFromQPB' rn# rc# m# q# n# c# ps bs =
->     case rn# `andI#` rc# of
->       0# -> makePagesFromQPB' rn# (rc# `uncheckedIShiftL#` 1#) m# q# n# c# ps bs
->       _  -> makePagesFromQPB'' rn# rc# m# q# n# c# ps bs
->   makePagesFromQPB'' rn# rc# m# q# n# c# ps bs =
->     case m# of
->       0# -> makePagesFromPB'' rn# rc# n# c# ps bs
->       _  -> let w# = WORD_SIZE_IN_BITS# -# m#
->              in makePagesFromUPB'' rn# rc# m# w# (q# `uncheckedShiftL#` w#) n# c# ps bs
-
->   makePagesFromUPB, makePagesFromUPB', makePagesFromUPB'' :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromUPB rn# rc# m# w# u# n# c# ps bs =
->     case rn# of
->       0# -> emptyPages
->       _  -> makePagesFromUPB' rn# rc# m# w# u# n# c# ps bs
->   makePagesFromUPB' rn# rc# m# w# u# n# c# ps bs =
->     case rn# `andI#` rc# of
->       0# -> makePagesFromUPB' rn# (rc# `uncheckedIShiftL#` 1#) m# w# u# n# c# ps bs
->       _  -> makePagesFromUPB'' rn# rc# m# w# u# n# c# ps bs
->   makePagesFromUPB'' rn# rc# m# w# u# n# c# ps bs = error "TODO"
-
->   makePagesFromUAPB, makePagesFromUAPB', makePagesFromUAPB'' :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromUAPB rn# rc# m# w# u# s# a# n# c# ps bs =
->     case rn# of
->       0# -> emptyPages
->       _  -> makePagesFromUAPB' rn# rc# m# w# u# s# a# n# c# ps bs
->   makePagesFromUAPB' rn# rc# m# w# u# s# a# n# c# ps bs =
->     case rn# `andI#` rc# of
->       0# -> makePagesFromUAPB' rn# (rc# `uncheckedIShiftL#` 1#) m# w# u# s# a# n# c# ps bs
->       _  -> makePagesFromUAPB'' rn# rc# m# w# u# s# a# n# c# ps bs
->   makePagesFromUAPB'' rn# rc# m# w# u# s# a# n# c# ps bs = error "TODO"
-
-> -}
+>   makePagesFromUAPB :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> ByteArray# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromUAPB _rn# _rc# _m# _w# _u# _s# _a# _n# _ps _bs = error "TODO"
 
 
   Miscellaneous
