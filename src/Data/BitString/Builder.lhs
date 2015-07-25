@@ -116,13 +116,13 @@
 >   makeTail :: Builders -> Builder
 >   makeTail (BS (B m# q# n# ps) bs') =
 >     case rm# of
->       0# -> B mm# q# nn# (makePagesFromPBf nn# n# ps bs')
+>       0# -> B mm# q# nn# (makePagesFromPiBi nn# n# ps bs')
 >       _  -> case rm# ># 0# of
 >               0# -> let nrm# = negateInt# rm#
 >                         nrw# = WORD_SIZE_IN_BITS# -# nrm#
 >                         nq#  = uncheckedShiftRL# q# nrm#
 >                         nu#  = uncheckedShiftL# q# nrw#
->                      in B mm# nq# nn# (makePagesFromUPB nn# (firstPageSize nn#) nrm# nrw# nu# n# ps bs')
+>                      in B mm# nq# nn# (makePagesFromUPiB nn# (firstPageSize nn#) nrm# nrw# nu# n# ps bs')
 >               _  -> makeTailFromP' (uncheckedShiftL# q# rm#) rm# n# ps bs'
 >    where
 >     rm# = mm# -# m#
@@ -149,7 +149,7 @@
 
 >   makeTailFromP'' :: Word# -> Int# -> Int# -> Int# -> Pages -> Builders -> Builder
 >   makeTailFromP'' rq# rm# n# c# (PS (P a#) ps') bs =
->     B mm# (or# rq# (uncheckedShiftRL# q# m#)) nn# (makePagesFromUAPB nn# (firstPageSize nn#) m# w# u# s# a# (n# -# c#) ps' bs)
+>     B mm# (or# rq# (uncheckedShiftRL# q# m#)) nn# (makePagesFromUAPB nn# (firstPageSize nn#) m# w# u# s# a# (n# -# c#) c# ps' bs)
 >    where
 >     s# = c# -# 1#
 >     q# = indexWordArray# a# s#
@@ -168,13 +168,13 @@
 >   makeTailFromB' :: Word# -> Int# -> Builders -> Builder
 >   makeTailFromB' rq# rm# (BS (B m# q# n# ps) bs') =
 >     case rrm# of
->       0# -> B mm# (or# rq# q#) nn# (makePagesFromPBf nn# n# ps bs')
+>       0# -> B mm# (or# rq# q#) nn# (makePagesFromPiBi nn# n# ps bs')
 >       _  -> case rrm# ># 0# of
 >               0# -> let nrm# = negateInt# rrm#
 >                         nrw# = WORD_SIZE_IN_BITS# -# nrm#
 >                         nq#  = uncheckedShiftRL# q# nrm#
 >                         nu#  = uncheckedShiftL# q# nrw#
->                      in B mm# nq# nn# (makePagesFromUPB nn# (firstPageSize nn#) nrm# nrw# nu# n# ps bs')
+>                      in B mm# nq# nn# (makePagesFromUPiB nn# (firstPageSize nn#) nrm# nrw# nu# n# ps bs')
 >               _  -> makeTailFromP' (or# rq# (uncheckedShiftL# q# rrm#)) rrm# n# ps bs'
 >    where
 >     rrm# = rm# -# m#
@@ -205,11 +205,22 @@
     Invariants:
     * "0 <= n <= rn"
 
->   makePagesFromPBf :: Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromPBf rn# n# ps bs =
+>   makePagesFromPiBi :: Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromPiBi rn# n# ps bs =
 >     case rn# ># n# of
 >       0# -> ps
->       _  -> makePagesFromPBf' rn# (firstPageSize rn#) n# ps bs
+>       _  -> makePagesFromPiB' rn# (firstPageSize rn#) n# ps bs
+
+    Invariants:
+    * "0 <= n <= rn"
+    * "prc == 2^i"
+    * "rn .&. (2*prc - 1) == 0"
+
+>   makePagesFromPiB :: Int# -> Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromPiB rn# prc# n# ps bs =
+>     case rn# ># n# of
+>       0# -> ps
+>       _  -> makePagesFromPiB' rn# (nextPageSize rn# prc#) n# ps bs
 
     Invariants:
     * "0 <= n <= rn"
@@ -230,8 +241,8 @@
     * "rn .&. (rc - 1) == 0"
     * "0 <= n < rn"
 
->   makePagesFromPBf' :: Int# -> Int# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromPBf' rn# rc# n# ps bs =
+>   makePagesFromPiB' :: Int# -> Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromPiB' rn# rc# n# ps bs =
 >     case n# of
 >       0# -> makePagesFromB' rn# rc# bs
 >       _  -> makePagesFromPB'' rn# rc# n# (firstPageSize n#) ps bs
@@ -270,10 +281,10 @@
     * "rn .&. (rc - 1) == 0"
 
 >   makePagesFromB' :: Int# -> Int# -> Builders -> Pages
->   makePagesFromB' rn# rc# (BS (B m# _q# n# ps) bs') =
+>   makePagesFromB' rn# rc# (BS (B m# q# n# ps) bs') =
 >     case m# of
->       0# -> makePagesFromPBf' rn# rc# n# ps bs'
->       _  -> error "TODO: misaligned copy"
+>       0# -> makePagesFromPiB' rn# rc# n# ps bs'
+>       _  -> let w# = WORD_SIZE_IN_BITS# -# m# in makePagesFromUPiB rn# rc# m# w# (uncheckedShiftL# q# w#) n# ps bs'
 
     Invariants:
     * "n + s <= rn"
@@ -318,11 +329,23 @@
 >     case rs# ># s# of
 >       0# -> let ns# = s# -# rs#
 >              in case copyWordArray# a# ns# rma# 0# rs# st0# of
->                   st1# -> case unsafeFreezeByteArray# rma# st1# of
->                             (# st2#, ra# #) -> (# st2#, PS (P ra#) (makePagesFromAPB (rn# -# rc#) rc# ns# a# n# pc# ps bs) #)
+>                   st1# -> emitPage rma# (makePagesFromAPB (rn# -# rc#) rc# ns# a# n# pc# ps bs) st1#
 >       _  -> let nrs# = rs# -# s#
 >              in case copyWordArray# a# 0# rma# nrs# s# st0# of
 >                   st1# -> fillPageFromPB rn# rc# nrs# rma# n# pc# ps bs st1#
+
+    Invariants:
+    * "n <= rn - rc + rs"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 <= n"
+
+>   fillPageFromPiB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromPiB rn# rc# rs# rma# n# ps bs st0# =
+>     case n# of
+>       0# -> fillPageFromB rn# rc# rs# rma# bs st0#
+>       _  -> fillPageFromPB' rn# rc# rs# rma# n# (firstPageSize n#) ps bs st0#
 
     Invariants:
     * "n <= rn - rc + rs"
@@ -344,7 +367,7 @@
     * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
     * "rn .&. (rc - 1) == 0"
     * "0 < rs <= rc"
-    * "0 <= n"
+    * "0 < n"
     * "c == (n .&. c) == 2^j"
     * "n .&. (c - 1) == 0"
 
@@ -358,42 +381,163 @@
     * "0 < rs <= rc"
 
 >   fillPageFromB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Builders -> State# st -> (# State# st, Pages #)
->   fillPageFromB rn# rc# rs# rma# (BS (B m# _q# n# ps) bs') st0 =
+>   fillPageFromB rn# rc# rs# rma# (BS (B m# q# n# ps) bs') st0 =
 >     case m# of
->       0# -> case n# of
->               0# -> fillPageFromB rn# rc# rs# rma# bs' st0
->               _  -> fillPageFromPB' rn# rc# rs# rma# n# (firstPageSize n#) ps bs' st0
->       _  -> error "TODO: misaligned fill"
-
+>       0# -> fillPageFromPiB rn# rc# rs# rma# n# ps bs' st0
+>       _  -> let w# = m# -# WORD_SIZE_IN_BITS#
+>              in fillPageFromUPiB rn# rc# rc# rma# m# w# (uncheckedShiftL# q# w#) n# ps bs' st0
 
 
     Cases that are not aligned on word boundaries
     ---------------------------------------------
 
     Invariants:
-    * "0 < rc <= rn"
+    * "n < rn"
     * "rc == (rn .&. rc) == 2^i"
     * "rn .&. (rc - 1) == 0"
     * "0 < m < WORD_SIZE_IN_BITS"
     * "w == m - WORD_SIZE_IN_BITS"
     * "u .&. (2^w - 1) == 0"
-    * '0 <= n < rn'
+    * '0 <= n"
 
->   makePagesFromUPB :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromUPB _rn# _rc# _m# _w# _u# _n# _ps _bs = error "TODO"
+>   makePagesFromUPiB :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromUPiB rn# rc# m# w# u# n# ps bs =
+>     runST $ ST $ \st0# -> case newByteArray# rc# st0# of (# st1#, ma# #) -> fillPageFromUPiB rn# rc# rc# ma# m# w# u# n# ps bs st1#
 
     Invariants:
-    * "0 < rc <= rn"
+    * "n + s < rn"
     * "rc == (rn .&. rc) == 2^i"
     * "rn .&. (rc - 1) == 0"
     * "0 < m < WORD_SIZE_IN_BITS"
     * "w == m - WORD_SIZE_IN_BITS"
     * "u .&. (2^w - 1) == 0"
     * "0 <= s"
-    * "0 <= n < rn"
+    * "0 <= n"
+    * "pc == 2^j"
+    * "n .&. (2*pc - 1) == 0"
 
->   makePagesFromUAPB :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> ByteArray# -> Int# -> Pages -> Builders -> Pages
->   makePagesFromUAPB _rn# _rc# _m# _w# _u# _s# _a# _n# _ps _bs = error "TODO"
+>   makePagesFromUAPB :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> Pages
+>   makePagesFromUAPB rn# rc# m# w# u# s# a# n# pc# ps bs =
+>     runST $ ST $ \st0# -> case newByteArray# rc# st0# of (# st1#, ma# #) -> fillPageFromUAPB rn# rc# rc# ma# m# w# u# s# a# n# pc# ps bs st1#
+
+    Invariants:
+    * "n < rn"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 < m < WORD_SIZE_IN_BITS"
+    * "w == m - WORD_SIZE_IN_BITS"
+    * "u .&. (2^w - 1) == 0"
+    * '0 <= n"
+
+>   fillPageFromUPiB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Word# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromUPiB rn# rc# rs# rma# m# w# u# n# ps bs st0# =
+>     case n# of
+>       0# -> fillPageFromUB rn# rc# rs# rma# m# w# u# bs st0#
+>       _  -> fillPageFromUPB' rn# rc# rs# rma# m# w# u# n# (firstPageSize n#) ps bs st0#
+
+    Invariants:
+    * "n < rn"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 < m < WORD_SIZE_IN_BITS"
+    * "w == m - WORD_SIZE_IN_BITS"
+    * "u .&. (2^w - 1) == 0"
+    * '0 <= n"
+
+>   fillPageFromUPB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Word# -> Int# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromUPB rn# rc# rs# rma# m# w# u# n# pc# ps bs st0# =
+>     case n# of
+>       0# -> fillPageFromUB rn# rc# rs# rma# m# w# u# bs st0#
+>       _  -> fillPageFromUPB' rn# rc# rs# rma# m# w# u# n# (nextPageSize n# pc#) ps bs st0#
+
+    Invariants:
+    * "n < rn"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 < m < WORD_SIZE_IN_BITS"
+    * "w == m - WORD_SIZE_IN_BITS"
+    * "u .&. (2^w - 1) == 0"
+    * '0 < n"
+    * "c == (n .&. c) == 2^j"
+    * "n .&. (c - 1) == 0"
+
+>   fillPageFromUPB' :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Word# -> Int# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromUPB' rn# rc# rs# rma# m# w# u# n# c# (PS (P a#) ps') bs st0# = fillPageFromUAPB' rn# rc# rs# rma# m# w# u# c# a# (n# -# c#) c# ps' bs st0#
+
+    Invariants:
+    * "n + s < rn"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 < m < WORD_SIZE_IN_BITS"
+    * "w == m - WORD_SIZE_IN_BITS"
+    * "u .&. (2^w - 1) == 0"
+    * "0 <= s"
+    * "0 <= n"
+    * "c == (n .&. c) == 2^j"
+    * "n .&. (c - 1) == 0"
+
+>   fillPageFromUAPB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Word# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromUAPB rn# rc# rs# rma# m# w# u# s# a# n# pc# ps bs st0# =
+>     case s# of
+>       0# -> fillPageFromUPB rn# rc# rs# rma# m# w# u# n# pc# ps bs st0#
+>       _  -> fillPageFromUAPB' rn# rc# rs# rma# m# w# u# s# a# n# pc# ps bs st0#
+
+    Invariants:
+    * "n + s < rn"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 < m < WORD_SIZE_IN_BITS"
+    * "w == m - WORD_SIZE_IN_BITS"
+    * "u .&. (2^w - 1) == 0"
+    * "0 < s"
+    * "0 <= n"
+    * "c == (n .&. c) == 2^j"
+    * "n .&. (c - 1) == 0"
+
+>   fillPageFromUAPB' :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Word# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromUAPB' rn# rc# rs# rma# m# w# u# s# a# n# pc# ps bs st0# =
+>     case writeWordArray# rma# nrs# (or# u# (uncheckedShiftRL# q# m#)) st0# of
+>       st1# -> case nrs# of
+>                 0# -> emitPage rma# (makePagesFromUAPB (rn# -# rc#) rc# m# w# u# s# a# n# pc# ps bs) st1#
+>                 _  -> fillPageFromUAPB rn# rc# nrs# rma# m# w# (uncheckedShiftL# q# w#) ns# a# n# pc# ps bs st1#
+>    where
+>     nrs# = rs# -# 1#
+>     ns# = s# -# 1#
+>     q# = indexWordArray# a# ns#
+
+    Invariants:
+    * "0 < rn"
+    * "rc == (rn .&. rc) == 2^i == sizeofMutableByteArray rma / SIZEOF_HSWORD"
+    * "rn .&. (rc - 1) == 0"
+    * "0 < rs <= rc"
+    * "0 < m < WORD_SIZE_IN_BITS"
+    * "w == m - WORD_SIZE_IN_BITS"
+    * "u .&. (2^w - 1) == 0"
+
+>   fillPageFromUB :: Int# -> Int# -> Int# -> MutableByteArray# st -> Int# -> Int# -> Word# -> Builders -> State# st -> (# State# st, Pages #)
+>   fillPageFromUB rn# rc# rs# rma# m# w# u# (BS (B bm# bq# n# ps) bs') st0# =
+>     case bm# ==# w# of
+>       0# -> case bm# ># w# of
+>               0# -> let nw# = w# -# bm#
+>                      in fillPageFromUPiB rn# rc# rs# rma# (m# +# bm#) nw# (or# u# (uncheckedShiftL# bq# nw#)) n# ps bs' st0#
+>               _  -> let nm# = bm# -# w#
+>                         nw# = WORD_SIZE_IN_BITS# -# nm#
+>                         nu# = uncheckedShiftL# bq# nw#
+>                         nrs# = rs# -# 1#
+>                      in case writeWordArray# rma# nrs# (or# u# (uncheckedShiftRL# bq# nm#)) st0# of
+>                           st1# -> case nrs# of
+>                                     0# -> emitPage rma# (makePagesFromUPiB rn# rc# nm# nw# nu# n# ps bs') st1#
+>                                     _  -> fillPageFromUPiB rn# rc# nrs# rma# nm# nw# nu# n# ps bs' st1#
+>       _  -> let nrs# = rs# -# 1#
+>              in case writeWordArray# rma# nrs# (or# u# bq#) st0# of
+>                   st1# -> case nrs# of
+>                             0# -> emitPage rma# (makePagesFromPiB (rn# -# rc#) rc# n# ps bs') st1#
+>                             _  -> fillPageFromPiB rn# rc# nrs# rma# n# ps bs' st1#
 
 
   Miscellaneous
@@ -436,236 +580,6 @@
 > copyWordArray# a# o1# ma# o2# n# st# = copyByteArray# a# (o1# *# SIZEOF_HSWORD#) ma# (o2# *# SIZEOF_HSWORD#) (n# *# SIZEOF_HSWORD#) st#
 > {-# INLINE copyWordArray# #-}
 
-
-> {-
-
-  Merge the list of builders 'bs' into a single builder with 'nn' words and 'mm' trailing bits'.
-  The first builder in 'bs' contains the most sigificant bits of the result.
-
-> mergeBuilders :: Int -> Int -> Builders -> Builder
-> mergeBuilders mm  0 bs = mergeTiny mm 0 mm bs
-> mergeBuilders mm nn bs = mergeLarge mm nn bs
-
-  Merge a list of builders into a tiny builder with less than 'elementBitSize' of bits in total.
-  This is special as we know that all contributing builders must come with an empty page list.
-
-> mergeTiny :: Int -> Word -> Int -> [Builder] -> Builder
-> mergeTiny mm !qq rm (B m q _ _ : bs')
->   | (rm' > 0) = mergeTiny mm (qq .|. (q `unsafeShiftL` rm')) rm' bs'
->   | otherwise = B mm (qq .|. q) 0 emptyPages
->  where
->   rm' = rm - m
-> mergeTiny mm qq rm [] = B mm qq 0 emptyPages
-
-  Merge a list of builders into a builder with no trailing bits:
-
-> mergeAligned :: Int -> [Builder] -> Builder
-> mergeAligned nn (B m q _ _ : bs')
-    
-
->   | (mm == 0) = error "TODO"
->   | otherwise = merge1 mm nn mm 0 bs
->  where
-
-  Collect the remaining 'rm' trailing bits of the result, and add them to the existing bits in 'rq',
-  starting with the trailing bits of the first builder:
-
-> merge1 mm nn rm rq (B m q n ps : bs') =
->   case compare m rm of
->     LT -> merge2 mm nn (rm - m) (rq .|. (q `unsafeShiftL` (rm - m))) n 1 ps bs'
->     EQ -> error "TODO"
->     GT -> error "TODO"
-
-  Collect more trailing bits of the result from the head page 'p' of the first builder in 'bs',
-  with the total remaining word count 'n' and current page capacity 'c'. Note that the first
-  non-empty page is guaranteed to satisfy the demand.
-
-> merge2 mm nn rm rq n c (P a ps') bs
->   | (n == 0)  = merge1 mm nn rm rq bs -- no more pages in this builder
->   | (even n)  = merge2 mm nn rm rq n2 c2 ps' bs -- next page is empty
->   | otherwise = merge3 mm (rq .|. (q `unsafeShiftR` ro)) nn nn 1 rm ro (q `unsafeShiftL` rm) s a n2 c2 a ps' bs
->  where
->   s  = c - 1
->   q  = lookupElementArray a s
->   ro = elementBitSize - rm
->   n2 = n `unsafeShiftR` 1
->   c2 = c `unsafeShiftL` 1
-
-  We have now completed the trailing bits 'qq'.
-  The next 'ro' bits will come from the MSW of the page 'a' prefetched into 'q',
-  followed by 'rm' bits from the next MSW of 'a', with 'rm + ro == elementBitSize'.
-  's' is the number of remaining words in 'a', 'n' is the number of remaining words in 'ps',
-  and 'c' is the capacity of the first page of 'ps'.
-
-  'rn' is the remaining number of words to produce for the resulting builder,
-  and 'rc' is the capacity of the next page to produce.
-
-> merge3 mm qq nn rn rc rm ro q s a n c ps bs
->   | (nn == 0) = B 
->   | 
-
-
-
-    Fill a mutable array 'ra' of size 'sra' (in words) with input bits from the
-    following sources, beginning with the most significat bit first:
-
-    1. the most significant 'sq' bits of the word 'q' (0 < m < elementBitSize)
-    2. the first 'spa' words of the word array 'pa',
-    3. the array list 'pas', using the builder size 'n' and the head capacity 'c',
-    4. subsequent builders 'bs'.
-
-> mergeBuilders :: Int# -> MutableByteArray# st ->
->                  Int# -> Word# ->
->                  Int# -> ByteArray# ->
->                  Int# -> Int# -> [ElementArray] ->
->                  [Builder] ->
->                  ST st Builder
-> mergeBuilders sra# ra# sq# q# spa# pa# n# c# pas bs = do
->   let spa'# = spa# -# 1#
->   let qpa#  = indexWordArray# pa# spa'#
->   let sra'# = sra# -# 1#
->   let sq'#  = elementBitSize -# sq#
->   pokeElement# ra# sra'# (q# `or#` (qpa# `uncheckedShiftRL#` sq#))
->   mergeBuilders sra'# ra# sq# (qpa# `uncheckedShiftL#` sq'#) spa'# pa# n# c# pas bs
-
-> pokeElement# :: MutableByteArray# st -> Int# -> Word# -> ST st ()
-> pokeElement# ma# i# x# = ST $ \st# -> (# writeWordArray# ma# i# x# st#, () #)
-
-
-> instance Monoid Builder where
->   mempty  = emptyBuilder
->   mappend = appendBuilders
-
-> emptyBuilder :: Builder
-> emptyBuilder = B 0 0 0 []
-
-> appendBuilders :: Builder -> Builder -> Builder
-> appendBuilders b1 (B m2 t2 0 _) = appendTiny b1 m2 t2
-> appendBuilders (B 0 _ n1 rs1) (B m2 t2 n2 rs2) = B m2 t2 n' (mergeAligned n' 1 0 (rs2 ++ rs1))
->  where n' = n1 + n2
-> appendBuilders b1 b2 = concatBuilders [b1, b2]
-
-> appendTiny :: Builder -> Int -> Element -> Builder
-> appendTiny (B m t n rs) mm tt
->   | (m' < elementBitSize) = B m' t' n rs
->   | otherwise = B (m' - elementBitSize) (tt `unsafeShiftR` (elementBitSize - m)) (n + 1) (pushSingleton [elementArray t'] n rs)
->  where
->   m' = m + mm
->   t' = t .|. (tt `unsafeShiftL` m)
-
-> pushSingleton :: [ElementArray] -> Word -> [ElementArray] -> [ElementArray]
-> pushSingleton qs n (r:rs')
->   | odd n = mempty : pushSingleton (r:qs) (n `unsafeShiftR` 1) rs'
->   | otherwise = mconcat qs : rs'
-> pushSingleton qs _ [] = [mconcat qs]
-
-> mergeAligned :: Word -> Int -> Int -> [ElementArray] -> [ElementArray]
-> mergeAligned n s o rs
->   | (n == 0) = []
->   | odd n = merge [] s o rs
->   | otherwise = mempty : mergeMore o rs
->  where
->   mergeMore o' rs' = n' `seq` s' `seq` mergeAligned n' s' o' rs'
->    where
->     n' = n `unsafeShiftR` 1
->     s' = s * 2
->   merge qs qm ro rs'@(r:rs'')
->     | (rr > 0) = case compare qm rr of
->                    LT -> fromElementArraySlices (elementArraySlice ro qm r : qs) : mergeMore (ro + qm) rs'
->                    EQ -> fromElementArraySlices (elementArraySlice ro rr r : qs) : mergeMore 0 rs''
->                    GT -> merge (elementArraySlice ro rr r : qs) (qm - rr) 0 rs''
->     | otherwise = merge qs qm 0 rs'
->    where
->     rr = elementArrayLength r - ro
-
-> concatBuilders [] = mempty
-> concatBuilders [b] = b
-> concatBuilders bs = loop0 (mm `mod` elementBitSize) 0 (reverse bs)
->  where
->   mm = sum [ m | B m _ _ _ <- bs ]
->   nn = fromIntegral (mm `div` elementBitSize) + sum [ n | B _ _ n _ <- bs ]
-
-    Start by collecting the most significant @rm@ bits from @rbs@
-    to form the tail of the resulting builder. Here, @rt@ is the builder
-    constructed so far; the successive bits will be pushed in to the left of @rt@.
-
-    Preconditions: @0 <= rm < elementBitSize@.
-
->   loop0 rm rt (B m t n rs : bs')
->     | (m <= rm) = loop1 (rm - m) ((rt `unsafeShiftL` m) .|. t) n rs bs'
->     | otherwise = error "TODO: loop4 (rt `unsafeShiftL` rr .|. (t `unsafeShiftR` m')) m' (t `unsafeShiftL` (elementBitSize - m')) n 1 rs bs'"
->    where
->     m' = m - rm
->   loop0 _ rt [] = B m rt 0 [] -- this can only happen if the sum of tails is less than 'elementBitSize'
-
-    We've exhausted the tail input bits,
-    but still may need to collect @rm@ bits of the tail subword @rt@.
-
-    Preconditions: @0 <= rm < elementBitSize@.
-
->   loop1 rm rt n rs bs'
->     | (rm > 0) = loop2 rm rt n 1 rs bs'
->     | otherwise = error "TODO: loop4a rt n rs bs'"
-
-    Collect the remaining @rm@ tail bits out of the first non-empty block @r@ in @rs@,
-    or, failing that, from @bs'@. @s@ is the presumed size of @r@.
-
-    Note that we could skip the case of @null rs@ by checking for @n == 0@ instead.
-
-    Preconditions: @0 < rm < elementBitSize@.
-
->   loop2 rm rt n s (r:rs') bs'
->     | (n .&. s != 0) = loop3 rm rt n s r rs' bs'
->     | otherwise = n' `seq` s' `seq` loop2 rm rt n' s' rs' bs'
->    where
->     n' = n `unsafeShiftR` 1
->     s' = s * 2
->   loop2 rm rt _ _ [] bs' = loop0 rm rt bs'
-
-    Extract the remaining @rm@ tail bits out of the most significant element of @r@:
-
->   loop3 rm rt n s r rs' bs' = loop4 rt' rm' (t' `unsafeShiftL` rm) n s s' r rs' bs'
->    where
->     s'  = s - 1
->     t'  = lookupElementArray r s'
->     rt' = (rt `unsafeShiftL` rm) .|. (t' `unsafeShiftR` rm')
->     rm' = elementBitSize - rm
-
-    We now have a complete set of tail bits @rt@; the next @m@ bits of the
-    bitstring are stored in the most-significant bits of @u@, followed by
-    the remaining @s@ words of @r@, followed by @rs'@ and finally @bs'@.
-
-    This variant is for misaligned data, so @0 < rm < elementBitSize@.
-
->   loop4 rt rm u n s s r rs' bs'
->     | (s > 0) =
->     | otherwise =
-
-
-    Look into 'rs' for more tail bits:
-
->   loop3 rm rt n s (r:rs') bs'
->     | odd n = loop3' rr rt n s r rs' bs'
->     | otherwise = loop3 rr rt (n `unsafeShiftR` 1) (s * 2) rs' bs'
->   loop3 rr rt _ [] bs' = loop0 rr rt bs'
-
-    Found the remaining tail bits in the most significant element of 'r':
-
->   loop3' rr rt n s r rs' bs' = loop4' (rt `unsafeShiftL` rr .|. (t `unsafeShiftR` m)) m (t `unsafeShiftL` (elementBitSize - m)) n s s' r rs' bs'
->    where
->     t = lookupElementArray r s'
->     m = elementBitSize - rr
->     s' = s - 1
-
-    We've completed the tail subword "tt", and are ready to start on the body,
-    with some input tail bits left:
-
->   loop4 tt m u n rs bs' = error "TODO"
-
-    Same as "loop4", but without any tail bits:
-
->   loop4a tt n rs bs' = error "TODO"
-
-
-> -}
-
+> emitPage :: MutableByteArray# st -> Pages -> State# st -> (# State# st, Pages #)
+> emitPage rma# ps st0# = case unsafeFreezeByteArray# rma# st0# of (# st1#, ra# #) -> (# st1#, PS (P ra#) ps #)
+> {-# INLINE emitPage #-}
