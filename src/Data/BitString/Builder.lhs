@@ -61,23 +61,28 @@
 >   showsPrec _ (B m# q# n# ps) = showPages# n# ps . showChar ':' . showChar '[' . showTail# n# q# . showChar ']'
 
 > showPages# :: Int# -> Pages -> ShowS
-> showPages# n# = foldl (.) id . intersperse (showChar ':') . map showHex . unpackPages# n# 1#
+> showPages# n# = foldl (.) id . intersperse (showChar ':') . map showHex . unpackPages# n#
 
 > showTail# :: Int# -> Word# -> ShowS
 > showTail# 0# _  = id
-> showTail# m# q# = showHex (I# (word2Int# q# `andI#` 1#)) . showTail# (m# -# 1#) (q# `uncheckedShiftRL#` 1#)
+> showTail# m# q# = showHex (I# (andI# (word2Int# q#) 1#)) . showTail# (m# -# 1#) (uncheckedShiftRL# q# 1#)
 
-> unpackPages# :: Int# -> Int# -> Pages -> [Word]
-> unpackPages# n# c# ps =
->   case n# of
->     0# -> []
->     _  -> case (n# `andI#` c#) of
->             0# -> unpackPages# n# (c# `uncheckedIShiftL#` 1#) ps
->             _  -> case ps of
->                     (PS (P a#) ps') -> let loop s# = case s# of
->                                                        0# -> unpackPages# (n# `xorI#` c#) (c# `uncheckedIShiftL#` 1#) ps'
->                                                        _  -> let s'# = s# -# 1# in W# (indexWordArray# a# s'#) : loop s'#
->                                         in loop c#
+> unpackPages# :: Int# -> Pages -> [Word]
+> unpackPages# = loop
+>  where
+>   loop n# ps =
+>     case n# of
+>       0# -> []
+>       _  -> loop' n# (firstPageSize n#) ps
+>   loop' n# c# (PS (P a#) ps') = loop'' c# a# (n# - c#) c# ps'
+>   loop'' s# a# n# c# ps =
+>     case s# of
+>       0# -> loop''' n# c# ps
+>       _  -> let i# = s# -# 1# in W# (indexWordArray# a# i#) : loop'' i# n# c# ps
+>   loop''' n# c# ps =
+>     case n# of
+>       0# -> []
+>       _  -> loop' n# (nextPageSize n# c#) ps
 
 
   'Monoid' Instance
