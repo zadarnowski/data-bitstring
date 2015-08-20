@@ -93,7 +93,13 @@
 
 > instance Monoid Builder where
 >   mempty = emptyBuilder
->   mappend b1 b2 = mconcat [b1, b2]
+>
+>   mappend b1@(B m1# _ n1# _) b2@(B m2# _ n2# _) = concatBuilders m# n# bs
+>     where
+>       (# nt#, m# #) = quotRemInt# (m1# +# m2#) WORD_SIZE_IN_BITS#
+>       n# = n1# +# n2# +# nt#
+>       bs = BS b1 (BS b2 emptyBuilders)
+>
 >   mconcat []  = mempty
 >   mconcat [b] = b
 >   mconcat bsl = loop 0# 0# emptyBuilders bsl
