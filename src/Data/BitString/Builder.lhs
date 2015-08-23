@@ -4,15 +4,18 @@
 > #include "MachDeps.h"
 
 > module Data.BitString.Builder (
->   Builder
+>   Builder, subword, toByteString
 > ) where
 
-> import Data.List
+> import Data.ByteString (ByteString)
 > import Numeric (showHex)
 
+> import GHC.ForeignPtr
 > import GHC.Prim
 > import GHC.ST
 > import GHC.Types
+
+> import qualified Data.ByteString.Internal as ByteString
 
 
   Data Types
@@ -47,21 +50,41 @@
 > emptyPages    = withNewPage 0# (\ _ma# st# -> st#) (\ a# -> PS (P a#) emptyPages)
 
 
+  Singleton builders
+  ==================
+
+> subword :: Word -> Int -> Builder
+> subword (W# q#) n@(I# n#) | (n >= WORD_SIZE_IN_BITS) = error "TODO: unimplemented"
+>                           | (n > 0)                  = let m# = WORD_SIZE_IN_BITS# -# n# in B n# (uncheckedShiftRL# (uncheckedShiftL# q# m#) m#) 0# emptyPages
+>                           | otherwise                = mempty
+> {-# INLINE subword #-}
+
+
   'Show' Instance
   ===============
 
 > instance Show Builder where
->   showsPrec _ (B 0#  _ 0#  _) = showString "[]"
->   showsPrec _ (B 0#  _ n# ps) = showPages# n# ps
->   showsPrec _ (B m# q# 0#  _) = showChar '[' . showTail# m# q# . showChar ']'
->   showsPrec _ (B m# q# n# ps) = showPages# n# ps . showChar ':' . showChar '[' . showTail# m# q# . showChar ']'
+>   showsPrec _ (B 0#  _ 0#  _) = showString "-"
+>   showsPrec _ (B m# q# n# ps) = insertGrouping 8 (showPages# n# ps (showTail# m# q# ""))
 
 > showPages# :: Int# -> Pages -> ShowS
-> showPages# n# = foldl (.) id . intersperse (showChar ':') . map showHex . unpackPages# n#
+> showPages# n# = foldl (.) id . map showWord# . unpackPages# n#
+
+> insertGrouping :: Int -> String -> ShowS
+> insertGrouping n cs ss = loop n cs
+>  where
+>   loop  k (c:cs') = c : loop' (k - 1) cs'
+>   loop  _ []      = ss
+>   loop' 0 cs'     = if null cs' then ss else ':' : loop n cs'
+>   loop' k cs'     = loop k cs'
+
+> showWord# :: Word -> ShowS
+> showWord# (W# q#) = showTail# WORD_SIZE_IN_BITS# q#
 
 > showTail# :: Int# -> Word# -> ShowS
-> showTail# 0# _  = id
-> showTail# m# q# = showHex (I# (andI# (word2Int# q#) 1#)) . showTail# (m# -# 1#) (uncheckedShiftRL# q# 1#)
+> showTail# m# q# = case m# of
+>                     0# -> id
+>                     _  -> showHex (I# (andI# (word2Int# q#) 1#)) . showTail# (m# -# 1#) (uncheckedShiftRL# q# 1#)
 
 > unpackPages# :: Int# -> Pages -> [Word]
 > unpackPages# = loop
@@ -88,18 +111,97 @@
 >       _  -> loop' n# (nextPageSize n# c#) ps
 
 
+  Bytestring Conversion
+  =====================
+
+  Export a builder to a bytestring, padding it with zeros to a full byte size.
+  The following code always allocates the byte string in an array of full words,
+  since it greately simplifies export of the builder's tail bits, and since GHC's
+  memory manager is likely to align all arrays on word boundaries anyway.
+
+> toByteString :: Builder -> ByteString
+> toByteString (B mm# qq# nn# ps) = ByteString.fromForeignPtr bfp 0 (I# bss#)
+>  where
+
+    The size of the array allocated for the byte string:
+
+>   bas# = (nn# +# (mm# ># 0#)) *# SIZEOF_HSWORD#
+
+    The size of resulting byte string, which in general will be up to 7 bytes
+    smaller than the size of the allocated array:
+
+>   bss# = (nn# *# SIZEOF_HSWORD#) +# uncheckedIShiftRA# (mm# +# 7#) 3#
+
+    The actual array constructed from the byte string. The 'unsafeCoerce#' is
+    here to coerce a frozen 'ByteArray#' back to 'MutableByteArray#' as required
+    by 'ForeignPtr', which, while ugly, is always safe.
+
+>   bfp = withNewPinnedArray bas# fillArray $ \a# -> ForeignPtr (byteArrayContents# a#) (PlainPtr (unsafeCoerce# a#))
+
+    Now it's time to fill the allocated array with bit data, all in the painfully-explicit
+    unboxed state “monad”. Since the pages are kept in reverse order, we fill the array
+    in reverse, too, beginning with the tail word, remembering to write all words to the
+    byte string in the little-endian format.
+
+>   fillArray :: MutableByteArray# s -> State# s -> State# s
+>   fillArray ma# st0# =
+>     case mm# of
+>       0# -> writePages ma# st0#
+>       _  -> writePages ma# (writeWordArray# ma# nn# (littleEndian# qq#) st0#)
+
+    The first page written is slightly special, since we need to use 'firstPageSize'
+    to obtain its size, whereas all subsequent pages can be sized using 'nextPageSize':
+
+>   writePages :: MutableByteArray# s -> State# s -> State# s
+>   writePages ma# st0# =
+>     case nn# of
+>       0# -> st0#
+>       _  -> writePages' ma# nn# (firstPageSize nn#) ps st0#
+
+>   writePages' :: MutableByteArray# s -> Int# -> Int# -> Pages -> State# s -> State# s
+>   writePages' ma# n# pc# (PS (P a#) ps') st0# =
+>     case copyWordArrayLE# a# 0# ma# o# pc# st0# of
+>       st1# -> case o# of
+>                 0# -> st1#
+>                 _  -> writePages' ma# o# (nextPageSize o# pc#) ps' st1#
+>    where
+>     o# = n# -# pc#
+
+    Last but not least, we deal with the target architecture's endianess.
+    On little-endian machines, the in-memory byte order coincides precisely
+    with that intended for our byte string, so we can perform our construction
+    using fast bulk memory copies. On big-endian machines, however, we need to
+    byte-swap each work en route to the target array.
+
+>   littleEndian# :: Word# -> Word#
+> #ifdef WORDS_BIGENDIAN
+>   littleEndian# x# = byteSwap# x#
+> #else
+>   littleEndian# x# = x#
+> #endif
+
+>   copyWordArrayLE# :: ByteArray# -> Int# -> MutableByteArray# s -> Int# -> Int# -> State# s -> State# s
+> #ifdef WORDS_BIGENDIAN
+>   copyWordArrayLE# a# o# ma# mo# n# st0# = loop o# mo# st0#
+>    where
+>     loop i# mi# st1# = case i# <# j# of
+>                         0# -> st1#
+>                         -  -> loop (i# +# 1#) (mi# +# 1#) (writeWordArray# ma# mi# (byteSwap# (indexWordArray# a# i#)) st1#)
+>     j# = o# +# n#
+> #else
+>   copyWordArrayLE# a# o# ma# mo# n# st0# = copyWordArray# a# o# ma# mo# n# st0#
+> #endif
+
+
   'Monoid' Instance
   =================
 
 > instance Monoid Builder where
 >   mempty = emptyBuilder
->
->   mappend b1@(B m1# _ n1# _) b2@(B m2# _ n2# _) = concatBuilders m# n# bs
->     where
->       (# nt#, m# #) = quotRemInt# (m1# +# m2#) WORD_SIZE_IN_BITS#
->       n# = n1# +# n2# +# nt#
->       bs = BS b1 (BS b2 emptyBuilders)
->
+>   mappend b1@(B m1# _ n1# _) b2@(B m2# _ n2# _) = concatBuilders m# n# (BS b2 (BS b1 emptyBuilders))
+>    where
+>     (# nt#, m# #) = quotRemInt# (m1# +# m2#) WORD_SIZE_IN_BITS#
+>     n# = n1# +# n2# +# nt#
 >   mconcat []  = mempty
 >   mconcat [b] = b
 >   mconcat bsl = loop 0# 0# emptyBuilders bsl
@@ -576,6 +678,11 @@
 > withNewPage s# f k = freezePage k $ \st0# ->
 >   case newByteArray# s# st0# of (# st1#, ma# #) -> case f ma# st1# of st2# -> (# st2#, ma# #)
 > {-# INLINE withNewPage #-}
+
+> withNewPinnedArray :: Int# -> (forall st . MutableByteArray# st -> State# st -> State# st) -> (ByteArray# -> a) -> a
+> withNewPinnedArray s# f k = freezePage k $ \st0# ->
+>   case newPinnedByteArray# s# st0# of (# st1#, ma# #) -> case f ma# st1# of st2# -> (# st2#, ma# #)
+> {-# INLINE withNewPinnedArray #-}
 
 > freezePage :: (ByteArray# -> a) -> (forall st . State# st -> (# State# st, MutableByteArray# st #)) -> a
 > freezePage k f = runST $ ST $ \st0# ->
