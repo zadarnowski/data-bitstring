@@ -4,11 +4,13 @@
 > #include "MachDeps.h"
 
 > module Data.BitString.Builder (
->   Builder, subword, toByteString
+>   Builder, subword, toByteString,
+>   length
 > ) where
 
 > import Data.ByteString (ByteString)
 > import Numeric (showHex)
+> import Prelude hiding (length)
 
 > import GHC.ForeignPtr
 > import GHC.Prim
@@ -47,16 +49,41 @@
 
 > emptyBuilders = BS emptyBuilder emptyBuilders
 > emptyBuilder  = B 0# (int2Word# 0#) 0# emptyPages
-> emptyPages    = withNewPage 0# (\ _ma# st# -> st#) (\ a# -> PS (P a#) emptyPages)
+> emptyPages    = withNewPage 0# (\ _ma# st# -> st#) (\a# -> PS (P a#) emptyPages)
+
+
+  Primitive operations
+  ====================
+
+> length :: Builder -> Int
+> length (B m# _ n# _) = I# (m# +# n# *# WORD_SIZE_IN_BITS#)
+> {-# INLINE length #-}
 
 
   Singleton builders
   ==================
 
 > subword :: Word -> Int -> Builder
-> subword (W# q#) n@(I# n#) | (n >= WORD_SIZE_IN_BITS) = error "TODO: unimplemented"
->                           | (n > 0)                  = let m# = WORD_SIZE_IN_BITS# -# n# in B n# (uncheckedShiftRL# (uncheckedShiftL# q# m#) m#) 0# emptyPages
->                           | otherwise                = mempty
+> subword (W# qq#) nn@(I# nn#) | (nn >= WORD_SIZE_IN_BITS) = let (# n#, m# #) = quotRemInt# nn# WORD_SIZE_IN_BITS#
+>                                                             in B m# (int2Word# 0#) n# (pages n# (firstPageSize n#))
+>                              | (nn > 0)                  = let m# = WORD_SIZE_IN_BITS# -# nn#
+>                                                             in B nn# (uncheckedShiftRL# (uncheckedShiftL# qq# m#) m#) 0# emptyPages
+>                              | otherwise                 = mempty
+>  where
+>   pages n# pc# =
+>     case o# of
+>       0# -> withNewPage pc# mkFinalPage (\a# -> PS (P a#) emptyPages)
+>       _  -> withNewPage pc# mkBlankPage (\a# -> PS (P a#) (pages o# (nextPageSize o# pc#)))
+>    where
+>     o# = n# -# pc#
+>
+>     mkFinalPage :: MutableByteArray# s -> State# s -> State# s
+>     mkFinalPage ma# st0# = case writeWordArray# ma# 0# qq# st0# of
+>                              st3# -> setByteArray# ma# (1# *# SIZEOF_HSWORD#) ((pc# -# 1#) *# SIZEOF_HSWORD#) 0# st3#
+>
+>     mkBlankPage :: MutableByteArray# s -> State# s -> State# s
+>     mkBlankPage ma# st0# = setByteArray# ma# 0# (pc# *# SIZEOF_HSWORD#) 0# st0#
+>
 > {-# INLINE subword #-}
 
 
@@ -64,18 +91,18 @@
   ===============
 
 > instance Show Builder where
->   showsPrec _ (B 0#  _ 0#  _) = showString "-"
->   showsPrec _ (B m# q# n# ps) = insertGrouping 8 (showPages# n# ps (showTail# m# q# ""))
+>   showsPrec _ (B 0#  _ 0#  _) = showString "[bs| |]"
+>   showsPrec _ (B m# q# n# ps) = showString "[bs| " . insertGrouping 72 "\n     " (insertGrouping 8 " " (showPages# n# ps (showTail# m# q# "")) "") . showString " |]"
 
 > showPages# :: Int# -> Pages -> ShowS
 > showPages# n# = foldl (.) id . map showWord# . unpackPages# n#
 
-> insertGrouping :: Int -> String -> ShowS
-> insertGrouping n cs ss = loop n cs
+> insertGrouping :: Int -> String -> String -> ShowS
+> insertGrouping n d cs ss = loop n cs
 >  where
 >   loop  k (c:cs') = c : loop' (k - 1) cs'
 >   loop  _ []      = ss
->   loop' 0 cs'     = if null cs' then ss else ':' : loop n cs'
+>   loop' 0 cs'     = if null cs' then ss else d ++ loop n cs'
 >   loop' k cs'     = loop k cs'
 
 > showWord# :: Word -> ShowS
@@ -87,28 +114,29 @@
 >                     _  -> showHex (I# (andI# (word2Int# q#) 1#)) . showTail# (m# -# 1#) (uncheckedShiftRL# q# 1#)
 
 > unpackPages# :: Int# -> Pages -> [Word]
-> unpackPages# = loop
+> unpackPages# = loop []
 >  where
 >
->   loop :: Int# -> Pages -> [Word]
->   loop n# ps =
+>   loop :: [Word] -> Int# -> Pages -> [Word]
+>   loop rs n# ps =
 >     case n# of
->       0# -> []
->       _  -> loop' n# (firstPageSize n#) ps
+>       0# -> rs
+>       _  -> loop' rs n# (firstPageSize n#) ps
 >
->   loop' :: Int# -> Int# -> Pages -> [Word]
->   loop' n# c# (PS (P a#) ps') = loop'' c# a# (n# -# c#) c# ps'
+>   loop' :: [Word] -> Int# -> Int# -> Pages -> [Word]
+>   loop' rs n# c# (PS (P a#) ps') = loop'' rs c# a# (n# -# c#) c# ps'
 >
->   loop'' :: Int# -> ByteArray# -> Int# -> Int# -> Pages -> [Word]
->   loop'' s# a# n# c# ps =
+>   loop'' :: [Word] -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> [Word]
+>   loop'' rs s# a# n# c# ps =
 >     case s# of
->       0# -> loop''' n# c# ps
->       _  -> let i# = s# -# 1# in W# (indexWordArray# a# i#) : loop'' i# a# n# c# ps
+>       0# -> loop''' rs n# c# ps
+>       _  -> let i# = s# -# 1# in loop'' (W# (indexWordArray# a# i#) : rs) i# a# n# c# ps
 >
->   loop''' n# c# ps =
+>   loop''' :: [Word] -> Int# -> Int# -> Pages -> [Word]
+>   loop''' rs n# c# ps =
 >     case n# of
->       0# -> []
->       _  -> loop' n# (nextPageSize n# c#) ps
+>       0# -> rs
+>       _  -> loop' rs n# (nextPageSize n# c#) ps
 
 
   Bytestring Conversion
@@ -420,7 +448,7 @@
 
 >   makePagesFromAPB' :: Int# -> Int# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> Pages
 >   makePagesFromAPB' rn# rc# s# a# n# pc# ps bs =
->     runST $ ST $ \st0# -> case newByteArray# rc# st0# of (# st1#, ma# #) -> fillPageFromAPB rn# rc# rc# ma# s# a# n# pc# ps bs st1#
+>     runST $ ST $ \st0# -> case newByteArray# (rc# *# SIZEOF_HSWORD#) st0# of (# st1#, ma# #) -> fillPageFromAPB rn# rc# rc# ma# s# a# n# pc# ps bs st1#
 
     Invariants:
     * "n + s <= rn - rc + rs"
@@ -510,7 +538,7 @@
 
 >   makePagesFromUPiB :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> Pages -> Builders -> Pages
 >   makePagesFromUPiB rn# rc# m# w# u# n# ps bs =
->     runST $ ST $ \st0# -> case newByteArray# rc# st0# of (# st1#, ma# #) -> fillPageFromUPiB rn# rc# rc# ma# m# w# u# n# ps bs st1#
+>     runST $ ST $ \st0# -> case newByteArray# (rc# *# SIZEOF_HSWORD#) st0# of (# st1#, ma# #) -> fillPageFromUPiB rn# rc# rc# ma# m# w# u# n# ps bs st1#
 
     Invariants:
     * "n + s < rn"
@@ -526,7 +554,7 @@
 
 >   makePagesFromUAPB :: Int# -> Int# -> Int# -> Int# -> Word# -> Int# -> ByteArray# -> Int# -> Int# -> Pages -> Builders -> Pages
 >   makePagesFromUAPB rn# rc# m# w# u# s# a# n# pc# ps bs =
->     runST $ ST $ \st0# -> case newByteArray# rc# st0# of (# st1#, ma# #) -> fillPageFromUAPB rn# rc# rc# ma# m# w# u# s# a# n# pc# ps bs st1#
+>     runST $ ST $ \st0# -> case newByteArray# (rc# *# SIZEOF_HSWORD#) st0# of (# st1#, ma# #) -> fillPageFromUAPB rn# rc# rc# ma# m# w# u# s# a# n# pc# ps bs st1#
 
     Invariants:
     * "n < rn"
@@ -676,7 +704,7 @@
 
 > withNewPage :: Int# -> (forall st . MutableByteArray# st -> State# st -> State# st) -> (ByteArray# -> a) -> a
 > withNewPage s# f k = freezePage k $ \st0# ->
->   case newByteArray# s# st0# of (# st1#, ma# #) -> case f ma# st1# of st2# -> (# st2#, ma# #)
+>   case newByteArray# (s# *# SIZEOF_HSWORD#) st0# of (# st1#, ma# #) -> case f ma# st1# of st2# -> (# st2#, ma# #)
 > {-# INLINE withNewPage #-}
 
 > withNewPinnedArray :: Int# -> (forall st . MutableByteArray# st -> State# st -> State# st) -> (ByteArray# -> a) -> a
@@ -690,7 +718,7 @@
 > {-# INLINE freezePage #-}
 
 > copyWordArray# :: ByteArray# -> Int# -> MutableByteArray# st -> Int# -> Int# -> State# st -> State# st
-> copyWordArray# a# o1# ma# o2# n# st# = copyByteArray# a# (o1# *# SIZEOF_HSWORD#) ma# (o2# *# SIZEOF_HSWORD#) (n# *# SIZEOF_HSWORD#) st#
+> copyWordArray# a# o1# ma# o2# n# st0# = copyByteArray# a# (o1# *# SIZEOF_HSWORD#) ma# (o2# *# SIZEOF_HSWORD#) (n# *# SIZEOF_HSWORD#) st0#
 > {-# INLINE copyWordArray# #-}
 
 > emitPage :: MutableByteArray# st -> Pages -> State# st -> (# State# st, Pages #)
