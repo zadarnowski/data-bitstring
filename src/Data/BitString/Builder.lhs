@@ -4,7 +4,7 @@
 > #include "MachDeps.h"
 
 > module Data.BitString.Builder (
->   Builder, subword, toByteString,
+>   Builder, subint, toByteString,
 >   length
 > ) where
 
@@ -18,6 +18,13 @@
 > import GHC.Types
 
 > import qualified Data.ByteString.Internal as ByteString
+
+
+  Constants
+  =========
+
+> wordBits :: Int
+> wordBits = WORD_SIZE_IN_BITS
 
 
   Data Types
@@ -63,28 +70,32 @@
   Singleton builders
   ==================
 
-> subword :: Word -> Int -> Builder
-> subword (W# qq#) nn@(I# nn#) | (nn >= WORD_SIZE_IN_BITS) = let (# n#, m# #) = quotRemInt# nn# WORD_SIZE_IN_BITS#
->                                                             in B m# (int2Word# 0#) n# (pages n# (firstPageSize n#))
->                              | (nn > 0)                  = let m# = WORD_SIZE_IN_BITS# -# nn#
->                                                             in B nn# (uncheckedShiftRL# (uncheckedShiftL# qq# m#) m#) 0# emptyPages
->                              | otherwise                 = mempty
+> subint :: Int -> Int -> Builder
+> subint (I# qi#) nn@(I# nn#) | (nn >= wordBits) = let (# n#, m# #) = quotRemInt# nn# WORD_SIZE_IN_BITS#
+>                                                      z# = uncheckedIShiftRA# qi# (WORD_SIZE_IN_BITS# -# 1#)
+>                                                      q# = case m# of
+>                                                             0# -> int2Word# 0#
+>                                                             _  -> uncheckedShiftRL# (int2Word# z#) (WORD_SIZE_IN_BITS# -# m#)
+>                                                   in B m# q# n# (pages z# n# (firstPageSize n#))
+>                             | (nn > 0)         = let w# = WORD_SIZE_IN_BITS# -# nn#
+>                                                   in B nn# (uncheckedShiftRL# (uncheckedShiftL# (int2Word# qi#) w#) w#) 0# emptyPages
+>                             | otherwise        = mempty
 >  where
->   pages n# pc# =
+>   pages z# n# pc# =
 >     case o# of
 >       0# -> withNewPage pc# mkFinalPage (\a# -> PS (P a#) emptyPages)
->       _  -> withNewPage pc# mkBlankPage (\a# -> PS (P a#) (pages o# (nextPageSize o# pc#)))
+>       _  -> withNewPage pc# mkBlankPage (\a# -> PS (P a#) (pages z# o# (nextPageSize o# pc#)))
 >    where
 >     o# = n# -# pc#
 >
 >     mkFinalPage :: MutableByteArray# s -> State# s -> State# s
->     mkFinalPage ma# st0# = case writeWordArray# ma# 0# qq# st0# of
->                              st3# -> setByteArray# ma# (1# *# SIZEOF_HSWORD#) ((pc# -# 1#) *# SIZEOF_HSWORD#) 0# st3#
+>     mkFinalPage ma# st0# = case writeWordArray# ma# 0# (int2Word# qi#) st0# of
+>                              st3# -> setByteArray# ma# (1# *# SIZEOF_HSWORD#) ((pc# -# 1#) *# SIZEOF_HSWORD#) z# st3#
 >
 >     mkBlankPage :: MutableByteArray# s -> State# s -> State# s
->     mkBlankPage ma# st0# = setByteArray# ma# 0# (pc# *# SIZEOF_HSWORD#) 0# st0#
+>     mkBlankPage ma# st0# = setByteArray# ma# 0# (pc# *# SIZEOF_HSWORD#) z# st0#
 >
-> {-# INLINE subword #-}
+> {-# INLINE subint #-}
 
 
   'Show' Instance
