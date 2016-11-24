@@ -1,6 +1,7 @@
 > {-# LANGUAGE TemplateHaskell #-}
 > {-# OPTIONS_GHC -fno-warn-orphans #-}
 
+> module Main where
 > import Control.Monad
 > import Data.Bits
 > import Data.BitString.Builder (Builder)
