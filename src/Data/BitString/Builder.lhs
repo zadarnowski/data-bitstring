@@ -1,7 +1,7 @@
 > {-# LANGUAGE BangPatterns, CPP, MagicHash, RankNTypes, UnboxedTuples #-}
 > {-# OPTIONS_GHC -funbox-strict-fields #-}
 
-> #include "MachDeps.h"
+#include "MachDeps.h"
 
 > module Data.BitString.Builder (
 >   Builder,
@@ -201,7 +201,6 @@
 > --   consuming the list lazily. The operation will perform
 > --   @n/2 * log(n)@ word copies, where
 > --   @n == ceiling(length(xs) / bitSize (0::Word)@.
-
 > fromList :: [Bool] -> Builder
 > fromList = loop 0# (int2Word# 0#) 0# emptyPages
 >  where
@@ -935,11 +934,11 @@
 
 > littleEndian# :: Word# -> Word#
 > littleEndian# x# =
->  #ifdef WORDS_BIGENDIAN
+#ifdef WORDS_BIGENDIAN
 >   byteSwap# x#
->  #else
+#else
 >   x#
->  #endif
+#endif
 > {-# INLINE littleEndian# #-}
 
   Copies a byte array, also byte-swapping each word on big-endian platforms.
@@ -947,16 +946,16 @@
 
 > copyWordArrayLE# :: ByteArray# -> Int# -> MutableByteArray# s -> Int# -> Int# -> State# s -> State# s
 > copyWordArrayLE# a# o# ma# mo# n# st0# =
->  #ifdef WORDS_BIGENDIAN
+#ifdef WORDS_BIGENDIAN
 >   loop o# mo# st0#
 >  where
 >   loop i# mi# st1# = case i# <# j# of
 >                        0# -> st1#
->                        -  -> loop (i# +# 1#) (mi# +# 1#) (writeWordArray# ma# mi# (byteSwap# (indexWordArray# a# i#)) st1#)
+>                        _  -> loop (i# +# 1#) (mi# +# 1#) (writeWordArray# ma# mi# (byteSwap# (indexWordArray# a# i#)) st1#)
 >   j# = o# +# n#
->  #else
->   copyByteArray# a# (o# *# SIZEOF_HSWORD#) ma# (mo# *# SIZEOF_HSWORD#) (n# *# SIZEOF_HSWORD#) st0#
->  #endif
+#else
+>  copyByteArray# a# (o# *# SIZEOF_HSWORD#) ma# (mo# *# SIZEOF_HSWORD#) (n# *# SIZEOF_HSWORD#) st0#
+#endif
 > {-# INLINE copyWordArrayLE# #-}
 
   Copies a memory region into a byte array, also byte-swapping each word on big-endian platforms.
@@ -964,15 +963,15 @@
 
 > copyAddrToWordArrayLE# :: Addr# -> MutableByteArray# s -> Int# -> Int# -> State# s -> State# s
 > copyAddrToWordArrayLE# a# ma# mo# n# st0# =
->  #ifdef WORDS_BIGENDIAN
+#ifdef WORDS_BIGENDIAN
 >   loop 0# mo# st0#
 >  where
 >   loop i# mi# st1# = case i# <# n# of
 >                        0# -> st1#
->                        -  -> loop (i# +# 1#) (mi# +# 1#) (writeWordArray# ma# mi# (byteSwap# (indexWordOffAddr# a# i#)) st1#)
->  #else
+>                        _  -> loop (i# +# 1#) (mi# +# 1#) (writeWordArray# ma# mi# (byteSwap# (indexWordOffAddr# a# i#)) st1#)
+#else
 >   copyAddrToByteArray# a# ma# (mo# *# SIZEOF_HSWORD#) (n# *# SIZEOF_HSWORD#) st0#
->  #endif
+#endif
 > {-# INLINE copyAddrToWordArrayLE# #-}
 
 
